@@ -4,7 +4,30 @@ import type { AttendanceStatus } from '@/lib/validation/attendance'
 // TIMEZONE
 // ============================================================
 
-export const APP_TIMEZONE = process.env.TZ ?? 'Asia/Jakarta'
+/**
+ * Ambil timezone aplikasi dari env, dengan sanitasi.
+ *
+ * Vercel kadang set `TZ=:UTC` (ada titik dua) — itu invalid.
+ * Kita sanitize + validasi pake Intl.
+ * Fallback: 'Asia/Jakarta'.
+ */
+function getAppTimezone(): string {
+  const raw = process.env.TZ ?? 'Asia/Jakarta'
+
+  // Buang titik dua di depan (Vercel: `:UTC` → `UTC`)
+  const cleaned = raw.replace(/^:/, '').trim()
+
+  // Validasi: coba pake Intl
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: cleaned })
+    return cleaned
+  } catch {
+    // Fallback kalau invalid
+    return 'Asia/Jakarta'
+  }
+}
+
+export const APP_TIMEZONE = getAppTimezone()
 
 export function getLocalTimeParts(date: Date = new Date()): {
   hours: number
@@ -43,12 +66,6 @@ function normalizeTime(time: Date | string): string {
 // STATUS
 // ============================================================
 
-/**
- * Hitung status absensi berdasarkan jam masuk & setting.
- *
- * ✅ standardCheckIn bisa Date (dari shift) ATAU string "HH:mm" (dari setting).
- * ✅ Handle cross-day (shift malam).
- */
 export function calculateStatus(params: {
   checkInTime: Date
   standardCheckIn: Date | string
@@ -56,7 +73,6 @@ export function calculateStatus(params: {
 }): { status: AttendanceStatus; lateMinutes: number } {
   const { checkInTime, standardCheckIn, lateToleranceMinutes } = params
 
-  // Normalisasi: Date → "HH:mm" WIB, string tetap
   const stdTimeStr = normalizeTime(standardCheckIn)
 
   const [stdHour, stdMin] = stdTimeStr.split(':').map(Number)
@@ -64,19 +80,12 @@ export function calculateStatus(params: {
 
   const { totalMinutes: checkInTotalMinutes } = getLocalTimeParts(checkInTime)
 
-  // ✅ Hitung selisih
   let diffMinutes = checkInTotalMinutes - stdTotalMinutes
 
-  // ✅ Handle cross-day:
-  // Kalau selisih > 12 jam (720 menit), kemungkinan absen "besoknya"
-  // Contoh: shift 23:00, absen 22:55 → diff = -5 (lebih awal, OK)
-  // Contoh: shift 23:00, absen 00:30 (besoknya) → diff = 90 (telat 30 menit)
-  //   Tapi kalau dihitung mentah: 30 - 1380 = -1350 → harusnya +90
+  // ✅ Handle cross-day
   if (diffMinutes < -720) {
-    // Absen "besoknya" dari shift
     diffMinutes += 24 * 60
   } else if (diffMinutes > 720) {
-    // Absen "kemarinnya" dari shift
     diffMinutes -= 24 * 60
   }
 
@@ -97,12 +106,6 @@ export function calculateStatus(params: {
 // DURASI
 // ============================================================
 
-/**
- * Hitung durasi kerja & early leave (pulang awal).
- *
- * ✅ standardCheckOut bisa Date (dari shift) ATAU string "HH:mm" (dari setting).
- * ✅ Handle cross-day (shift malam).
- */
 export function calculateWorkDuration(params: {
   checkIn: Date
   checkOut: Date
@@ -110,27 +113,20 @@ export function calculateWorkDuration(params: {
 }): { durationMinutes: number; earlyLeaveMinutes: number } {
   const { checkIn, checkOut, standardCheckOut } = params
 
-  // ============================================================
-  // 1. Hitung durasi kerja (handle cross-day)
-  // ============================================================
+  // 1. Durasi kerja (handle cross-day)
   let durationMs = checkOut.getTime() - checkIn.getTime()
 
-  // ✅ Kalau negatif, berarti lewat tengah malam → tambah 1 hari
   if (durationMs < 0) {
     durationMs += 24 * 60 * 60 * 1000
   }
 
-  // ✅ Kalau durasi > 16 jam, kemungkinan salah hari → kurangi 1 hari
-  // (shift normal gak mungkin > 16 jam)
   if (durationMs > 16 * 60 * 60 * 1000) {
     durationMs -= 24 * 60 * 60 * 1000
   }
 
   const durationMinutes = Math.max(0, Math.floor(durationMs / 60000))
 
-  // ============================================================
-  // 2. Hitung early leave (handle cross-day)
-  // ============================================================
+  // 2. Early leave
   const stdTimeStr = normalizeTime(standardCheckOut)
   const [stdHour, stdMin] = stdTimeStr.split(':').map(Number)
   const stdCheckOutMinutes = stdHour * 60 + stdMin
@@ -138,16 +134,11 @@ export function calculateWorkDuration(params: {
   const { totalMinutes: checkInMinutes } = getLocalTimeParts(checkIn)
   const { totalMinutes: checkOutMinutes } = getLocalTimeParts(checkOut)
 
-  // ✅ Handle cross-day untuk std check-out
-  // Contoh: shift 23:00-06:00
-  //   check-in  = 23:00 (1380 menit)
-  //   check-out = 06:00 (360 menit) → std lebih kecil dari check-in → cross-day
   let adjustedStdCheckOut = stdCheckOutMinutes
   if (adjustedStdCheckOut < checkInMinutes) {
     adjustedStdCheckOut += 24 * 60
   }
 
-  // ✅ Handle cross-day untuk check-out
   let adjustedCheckOut = checkOutMinutes
   if (adjustedCheckOut < checkInMinutes) {
     adjustedCheckOut += 24 * 60
