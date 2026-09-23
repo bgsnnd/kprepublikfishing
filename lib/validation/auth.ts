@@ -68,7 +68,7 @@ const cuidField = z
   .min(1, 'ID tidak boleh kosong')
 
 // ============================================================
-// Login — pakai username (bukan email)
+// Login — pakai username
 // ============================================================
 
 export const loginSchema = z.object({
@@ -146,7 +146,7 @@ export const updateUserSchema = z.object({
 export type UpdateUserInput = z.infer<typeof updateUserSchema>
 
 // ============================================================
-// Change Password
+// Change Password (self-service)
 // ============================================================
 
 export const changePasswordSchema = z
@@ -159,7 +159,20 @@ export const changePasswordSchema = z
             : 'Password lama harus berupa teks',
       })
       .min(1, 'Password lama wajib diisi'),
-    newPassword: passwordField,
+
+    newPassword: z
+      .string({
+        error: (issue) =>
+          issue.input === undefined
+            ? 'Password baru wajib diisi'
+            : 'Password baru harus berupa teks',
+      })
+      .min(8, 'Password baru minimal 8 karakter')
+      .max(72, 'Password baru maksimal 72 karakter')
+      .regex(/[a-z]/, 'Password harus mengandung huruf kecil')
+      .regex(/[A-Z]/, 'Password harus mengandung huruf besar')
+      .regex(/[0-9]/, 'Password harus mengandung angka'),
+
     confirmPassword: z
       .string({
         error: (issue) =>
@@ -181,7 +194,7 @@ export const changePasswordSchema = z
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>
 
 // ============================================================
-// Reset Password
+// Reset Password (admin)
 // ============================================================
 
 export const resetPasswordSchema = z.object({
