@@ -58,8 +58,25 @@ export function LoginForm() {
         return
       }
 
+      // ============================================================
+      // Tentukan redirect
+      // - `nextUrl` cuma dipake kalau user punya permission admin
+      // - selain itu, pake `redirectTo` dari API
+      // ============================================================
+      const permissions: string[] = json.data.permissions ?? []
+
+      const isAdmin =
+        permissions.includes('user.manage') ||
+        permissions.includes('role.manage') ||
+        permissions.includes('attendance.manage') ||
+        permissions.includes('pos.kantin') ||
+        permissions.includes('pos.pancing') ||
+        permissions.includes('pos.report') ||
+        permissions.includes('audit.read') ||
+        permissions.includes('system.settings')
+
       const targetUrl =
-        nextUrl || json.data.redirectTo || '/absensi'
+        isAdmin && nextUrl ? nextUrl : json.data.redirectTo || '/absensi'
 
       router.push(targetUrl)
       router.refresh()
@@ -114,10 +131,7 @@ export function LoginForm() {
       <form onSubmit={handleSubmit} className="space-y-5">
         {/* Username */}
         <div className="space-y-2">
-          <Label
-            htmlFor="username"
-            className="text-sm font-medium"
-          >
+          <Label htmlFor="username" className="text-sm font-medium">
             Username
           </Label>
 
@@ -139,10 +153,7 @@ export function LoginForm() {
           </div>
 
           {fieldErrors.username?.map((msg) => (
-            <p
-              key={msg}
-              className="text-xs text-destructive"
-            >
+            <p key={msg} className="text-xs text-destructive">
               {msg}
             </p>
           ))}
@@ -150,10 +161,7 @@ export function LoginForm() {
 
         {/* Password */}
         <div className="space-y-2">
-          <Label
-            htmlFor="password"
-            className="text-sm font-medium"
-          >
+          <Label htmlFor="password" className="text-sm font-medium">
             Password
           </Label>
 
@@ -174,10 +182,7 @@ export function LoginForm() {
           </div>
 
           {fieldErrors.password?.map((msg) => (
-            <p
-              key={msg}
-              className="text-xs text-destructive"
-            >
+            <p key={msg} className="text-xs text-destructive">
               {msg}
             </p>
           ))}
