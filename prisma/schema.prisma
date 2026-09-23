@@ -1,0 +1,667 @@
+// ============================================================
+// KPREPUBLIKFISHING — Prisma Schema
+// Multi-modul: RBAC, Absensi, Jadwal, Caddy, Kasir, Payroll, Audit
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================
+// 1. USER & AUTHENTICATION
+// ============================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  username      String    @unique
+  name          String
+  passwordHash  String
+
+  // Kepegawaian
+  employeeTypeId String?
+  employeeType   EmployeeType? @relation(fields: [employeeTypeId], references: [id])
+  joinDate       DateTime?
+  phone          String?
+  photoUrl       String?
+
+  // Lokasi kerja default (opsional)
+  defaultLocationId String?
+  defaultLocation   Location? @relation("UserDefaultLocation", fields: [defaultLocationId], references: [id])
+
+  // Face recognition (absensi)
+  faceEmbedding Json?
+  faceImageUrl  String?
+
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+
+  // Audit trail user ini
+  createdAt     DateTime  @default(now())
+  createdById   String?
+  updatedAt     DateTime  @updatedAt
+  updatedById   String?
+
+  // Relasi RBAC
+  userRoles     UserRole[]
+
+  // Relasi operasional
+  attendances       Attendance[]
+  shifts            Shift[]
+  caddySessions     CaddySession[]  @relation("CaddySessions")
+  transactions      Transaction[]
+  payrolls          Payroll[]
+  userSalaryConfigs UserSalaryConfig[]
+
+  // Relasi audit & auth
+  auditLogs         AuditLog[]
+  passwordResets    PasswordReset[]
+
+  holidaysCreated Holiday[] @relation("HolidayCreatedBy")
+  holidaysUpdated Holiday[] @relation("HolidayUpdatedBy")
+
+  @@index([email])
+  @@index([isActive])
+  @@index([employeeTypeId])
+  @@index([defaultLocationId])
+}
+
+model PasswordReset {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ============================================================
+// 2. RBAC — Role, Permission, Relasi
+// ============================================================
+
+model Role {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String
+  description String?
+
+  isSystem    Boolean   @default(false)
+  isActive    Boolean   @default(true)
+
+  createdAt   DateTime  @default(now())
+  createdById String?
+  updatedAt   DateTime  @updatedAt
+  updatedById String?
+
+  rolePermissions   RolePermission[]
+  userRoles         UserRole[]
+  roleSalaryConfigs RoleSalaryConfig[]
+
+  @@index([code])
+  @@index([isActive])
+}
+
+model Permission {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String
+  description String?
+  module      String
+
+  isSystem    Boolean   @default(false)
+  isActive    Boolean   @default(true)
+
+  createdAt   DateTime  @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@index([module])
+  @@index([code])
+  @@index([isActive])
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  grantedAt    DateTime   @default(now())
+  grantedBy    String?
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+model UserRole {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId     String
+  role       Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  assignedAt DateTime  @default(now())
+  assignedBy String?
+  expiresAt  DateTime?
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+// ============================================================
+// 3. MASTER DATA (data-driven, bukan enum)
+// ============================================================
+
+model EmployeeType {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+}
+
+model PaymentMethod {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  isActive    Boolean  @default(true)
+
+  transactions Transaction[]
+
+  createdAt   DateTime @default(now())
+}
+
+// ============================================================
+// 3b. SETTINGS (data-driven, fleksibel)
+// ============================================================
+
+model Setting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json
+  category    String
+  label       String
+  description String?
+  type        String   // "string" | "number" | "boolean" | "time" | "json"
+  isSystem    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+
+  @@index([category])
+  @@index([key])
+  @@index([isActive])
+}
+
+// ============================================================
+// 4. ATTENDANCE & SCHEDULING
+// ============================================================
+
+model Location {
+  id           String   @id @default(cuid())
+  code         String   @unique              // "KANTOR_PUSAT", "KOLAM_A"
+  name         String                        // "Kantor Pusat"
+  type         String   @default("OFFICE")   // OFFICE / POOL / WAREHOUSE
+  address      String?
+  latitude     Float
+  longitude    Float
+  radiusMeters Int      @default(100)
+  isActive     Boolean  @default(true)
+  isDefault    Boolean  @default(false)
+
+  attendances       Attendance[]
+  defaultUsers      User[]       @relation("UserDefaultLocation")
+
+  createdAt    DateTime @default(now())
+  createdById  String?
+  updatedAt    DateTime @updatedAt
+  updatedById  String?
+
+  @@index([code])
+  @@index([isActive])
+  @@index([isDefault])
+  @@index([type])
+}
+
+model Attendance {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+
+  // Relasi ke Shift — WAJIB untuk multi-absensi
+  shiftId      String
+  shift        Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  // Tanggal kerja (untuk grouping & query)
+  workDate     DateTime @db.Date
+
+  // Waktu
+  checkIn      DateTime
+  checkOut     DateTime?
+  method       String   @default("MANUAL")
+
+  // Durasi & status
+  workDurationMinutes Int?
+  status              String    @default("HADIR")
+  lateMinutes         Int       @default(0)
+  earlyLeaveMinutes   Int       @default(0)
+
+  // Approval
+  approvedById   String?
+  approvedAt     DateTime?
+  rejectionNote  String?
+
+  // Check-in location
+  checkInLat        Float?
+  checkInLng        Float?
+  checkInLocationId String?
+  checkInLocation   Location? @relation(fields: [checkInLocationId], references: [id])
+  checkInDistance   Float?
+  checkInAccuracy   Float?
+  checkInSelfieUrl  String?
+  checkInIpAddress  String?
+
+  // Check-out location
+  checkOutLat       Float?
+  checkOutLng       Float?
+  checkOutDistance  Float?
+  checkOutAccuracy  Float?
+  checkOutSelfieUrl String?
+  checkOutIpAddress String?
+
+  // Koreksi
+  isCorrected    Boolean   @default(false)
+  correctedAt    DateTime?
+  correctedById  String?
+  correctionNote String?
+
+  // Audit
+  confidence   Float?
+  deviceInfo   String?
+  notes        String?
+  createdById  String?
+  updatedById  String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // ✅ PERUBAHAN KUNCI:
+  // - Hapus: @@unique([userId, workDate])
+  // - Tambah: @@unique([userId, shiftId]) — 1 user 1 absensi per shift
+  @@unique([userId, shiftId])
+  @@index([userId, checkIn])
+  @@index([workDate])
+  @@index([checkIn])
+  @@index([checkInLocationId])
+  @@index([shiftId])
+  @@index([status])
+  @@index([userId, status])
+}
+
+model Shift {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+
+  shiftDate     DateTime
+  startTime     DateTime
+  endTime       DateTime
+  position      String?
+
+  status        String   @default("SCHEDULED")
+  notes         String?
+
+  createdAt     DateTime @default(now())
+  createdById   String?
+  updatedAt     DateTime @updatedAt
+  updatedById   String?
+
+  // Relasi balik ke Attendance
+  attendances   Attendance[]
+
+  @@index([userId, shiftDate])
+  @@index([shiftDate])
+  @@index([status])
+}
+
+model CaddySession {
+  id          String   @id @default(cuid())
+  caddyId     String
+  caddy       User     @relation("CaddySessions", fields: [caddyId], references: [id])
+
+  sessionDate DateTime
+  flightNo    String?
+  playerName  String?
+  fee         Int
+  tip         Int?
+  notes       String?
+
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([caddyId, sessionDate])
+  @@index([sessionDate])
+}
+
+// ============================================================
+// 5. POS / PENJUALAN
+// ============================================================
+
+model Category {
+  id       String    @id @default(cuid())
+  name     String
+  type     String
+  imageUrl String?
+  isActive Boolean   @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  products Product[]
+}
+
+model Product {
+  id          String    @id @default(cuid())
+  name        String
+  sku         String?   @unique
+  price       Int
+  cost        Int?
+  stock       Int       @default(0)
+  minStock    Int       @default(5)
+
+  categoryId  String
+  category    Category  @relation(fields: [categoryId], references: [id])
+
+  imageUrl    String?
+  isActive    Boolean   @default(true)
+
+  createdAt   DateTime  @default(now())
+  createdById String?
+  updatedAt   DateTime  @updatedAt
+  updatedById String?
+
+  transactionItems TransactionItem[]
+  stockMovements   StockMovement[]
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@index([sku])
+}
+
+model Transaction {
+  id            String   @id @default(cuid())
+  invoiceNo     String   @unique
+
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+
+  type          String
+  subtotal      Int
+  discount      Int      @default(0)
+  total         Int
+
+  paymentMethodId String?
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+
+  paidAmount    Int
+  changeAmount  Int
+
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  items TransactionItem[]
+
+  @@index([createdAt])
+  @@index([type])
+  @@index([userId])
+}
+
+model TransactionItem {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  productId     String
+  product       Product     @relation(fields: [productId], references: [id])
+
+  productName   String
+  quantity      Int
+  price         Int
+  subtotal      Int
+
+  @@index([transactionId])
+  @@index([productId])
+}
+
+model StockMovement {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+
+  type      String
+  quantity  Int
+  note      String?
+
+  createdById String?
+  createdAt DateTime @default(now())
+
+  @@index([productId, createdAt])
+  @@index([type])
+}
+
+// ============================================================
+// 6. PAYROLL
+// ============================================================
+
+model SalaryComponent {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  name          String
+  description   String?
+  type          String    // "EARNING" | "DEDUCTION"
+  calcMethod    String    // "FIXED" | "PER_DAY" | "PER_HOUR" | "PER_MINUTE" | "PERCENTAGE"
+
+  defaultAmount Int?      // ← default value
+  sortOrder     Int       @default(0)  // ← urutan di slip
+  isTaxable     Boolean   @default(false)
+  isSystem      Boolean   @default(false)  // ← gak bisa dihapus
+  isActive      Boolean   @default(true)
+
+  createdAt     DateTime  @default(now())
+  createdById   String?
+  updatedAt     DateTime  @updatedAt
+  updatedById   String?
+
+  roleConfigs  RoleSalaryConfig[]
+  userConfigs  UserSalaryConfig[]
+  payrollItems PayrollItem[]
+}
+
+model RoleSalaryConfig {
+  id            String          @id @default(cuid())
+  roleId        String
+  role          Role            @relation(fields: [roleId], references: [id])
+  componentId   String
+  component     SalaryComponent @relation(fields: [componentId], references: [id])
+
+  amount        Int
+  effectiveFrom DateTime        @default(now())
+  effectiveTo   DateTime?
+
+  createdAt     DateTime        @default(now())
+  createdById   String?
+
+  @@index([roleId, componentId, effectiveFrom])
+}
+
+model UserSalaryConfig {
+  id            String          @id @default(cuid())
+  userId        String
+  user          User            @relation(fields: [userId], references: [id])
+  componentId   String
+  component     SalaryComponent @relation(fields: [componentId], references: [id])
+
+  amount        Int
+  reason        String?
+  effectiveFrom DateTime        @default(now())
+  effectiveTo   DateTime?
+
+  createdAt     DateTime        @default(now())
+  createdById   String?
+
+  @@index([userId, componentId, effectiveFrom])
+}
+
+model Payroll {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+
+  periodMonth   Int
+  periodYear    Int
+  periodStart   DateTime
+  periodEnd     DateTime
+
+  // Snapshot absensi periode ini
+  workingDays       Int   @default(0)  // total hari kerja
+  presentDays       Int   @default(0)  // total hari hadir
+  absentDays        Int   @default(0)  // total alpha
+  lateDays          Int   @default(0)  // total hari telat
+  totalLateMinutes  Int   @default(0)  // total menit telat
+  totalWorkMinutes  Int   @default(0)  // total menit kerja
+
+  // Total gaji
+  grossEarning   Int
+  totalDeduction Int
+  netSalary      Int
+
+  status        String   @default("DRAFT")  // DRAFT | APPROVED | PAID | CANCELLED
+  approvedById  String?
+  approvedAt    DateTime?
+  paidAt        DateTime?
+  notes         String?
+
+  items         PayrollItem[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, periodMonth, periodYear])
+  @@index([periodYear, periodMonth])
+  @@index([status])
+}
+
+model PayrollItem {
+  id            String          @id @default(cuid())
+  payrollId     String
+  payroll       Payroll         @relation(fields: [payrollId], references: [id], onDelete: Cascade)
+  componentId   String
+  component     SalaryComponent @relation(fields: [componentId], references: [id])
+
+  componentCode String
+  componentName String
+  componentType String
+  calcMethod    String
+
+  baseAmount    Int
+  quantity      Float?
+  finalAmount   Int
+
+  notes         String?
+
+  @@index([payrollId])
+}
+
+// ============================================================
+// 7. AUDIT LOG (immutable, append-only)
+// ============================================================
+
+model AuditLog {
+  id          String    @id @default(cuid())
+
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
+  userEmail   String?
+  userRole    String?
+
+  action      String
+  entity      String
+  entityId    String?
+
+  before      Json?
+  after       Json?
+  changes     Json?
+
+  ipAddress   String?
+  userAgent   String?
+  requestId   String?
+
+  severity    String    @default("INFO")
+  module      String?
+
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([entity, entityId])
+  @@index([action, createdAt])
+  @@index([severity])
+  @@index([module, createdAt])
+  @@index([createdAt])
+}
+
+// ============================================================
+// 8. SECURITY — Login Attempt (rate limiting)
+// ============================================================
+
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  ip        String
+  success   Boolean
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ip, createdAt])
+  @@index([success, createdAt])
+}
+
+model Holiday {
+  id          String   @id @default(cuid())
+  date        DateTime @db.Date
+  name        String
+  type        String   @default("NATIONAL") // NATIONAL | COLLECTIVE | COMPANY
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  createdById String?
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+
+  createdBy User? @relation("HolidayCreatedBy", fields: [createdById], references: [id])
+  updatedBy User? @relation("HolidayUpdatedBy", fields: [updatedById], references: [id])
+
+  @@unique([date])
+  @@index([date])
+  @@index([isActive])
+}
