@@ -109,4 +109,4 @@ export async function POST(req: Request) {
       createdAt: et.createdAt,
     })
   }, { module: 'employee-types.create' })
-}
+}   
